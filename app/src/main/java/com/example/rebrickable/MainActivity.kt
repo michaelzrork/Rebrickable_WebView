@@ -136,14 +136,14 @@ class MainActivity : AppCompatActivity() {
 
 
         webView.webChromeClient = object : WebChromeClient() {
-//            override fun onCreateWindow(
-//                view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
-//            ): Boolean {
-//                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
-//                transport.webView = webView
-//                resultMsg.sendToTarget()
-//                return true
-//            }
+            override fun onCreateWindow(
+                view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
+            ): Boolean {
+                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                transport.webView = webView
+                resultMsg.sendToTarget()
+                return true
+            }
 
             override fun onShowFileChooser(
                 webView: WebView?, filePathCallback: ValueCallback<Array<Uri>>?,

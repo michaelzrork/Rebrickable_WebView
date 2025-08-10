@@ -10,7 +10,7 @@
         android:supportsRtl="true"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.Rebrickable">   <!-- ← add this -->
+        android:theme="@style/Theme.Rebrickable">
         <activity
             android:name=".MainActivity"
             android:exported="true">
