@@ -12,7 +12,6 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Message
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
@@ -32,9 +31,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.splashscreen.SplashScreen
 import androidx.core.view.WindowCompat
 import android.webkit.URLUtil
+import androidx.core.net.toUri
 
 class MainActivity : AppCompatActivity() {
 
@@ -67,8 +66,18 @@ class MainActivity : AppCompatActivity() {
         filePathCallback = null
     }
 
+    private fun handleDeepLinkIfAny(intent: Intent): Boolean {
+        val data = intent.data ?: return false
+        val host = data.host?.lowercase() ?: return false
+        if (host == "rebrickable.com" || host == "www.rebrickable.com") {
+            loadOrShowOffline(data.toString())
+            return true
+        }
+        return false
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        val splash = installSplashScreen()
+        installSplashScreen()
         super.onCreate(savedInstanceState)
 
         // Normal layout: content below status/nav bars
@@ -111,10 +120,10 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
 
             setSupportZoom(true)
-            setBuiltInZoomControls(false)
-            setDisplayZoomControls(false)
+            builtInZoomControls = false
+            displayZoomControls = false
             cacheMode = WebSettings.LOAD_DEFAULT
-            setJavaScriptCanOpenWindowsAutomatically(true)
+            javaScriptCanOpenWindowsAutomatically = true
             setSupportMultipleWindows(false) // force target=_blank into same WebView
             userAgentString = "$userAgentString RebrickableWebViewApp"
 
@@ -124,7 +133,7 @@ class MainActivity : AppCompatActivity() {
             @Suppress("DEPRECATION") setAllowUniversalAccessFromFileURLs(false)
 
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) setSafeBrowsingEnabled(true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) safeBrowsingEnabled = true
         }
 
         CookieManager.getInstance().apply {
@@ -210,7 +219,7 @@ class MainActivity : AppCompatActivity() {
         webView.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             try {
                 val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
-                val req = DownloadManager.Request(Uri.parse(url)).apply {
+                val req = DownloadManager.Request(url.toUri()).apply {
                     addRequestHeader("User-Agent", userAgent)
                     setMimeType(mimeType)
                     setTitle(fileName)
@@ -224,8 +233,14 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        if (savedInstanceState == null) loadOrShowOffline(startUrl)
-        else webView.restoreState(savedInstanceState)
+        if (savedInstanceState == null) {
+            if (!handleDeepLinkIfAny(intent)) {
+                loadOrShowOffline(startUrl)
+            }
+        } else {
+            webView.restoreState(savedInstanceState)
+        }
+
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -237,6 +252,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDeepLinkIfAny(intent)
     }
 
     override fun onDestroy() {

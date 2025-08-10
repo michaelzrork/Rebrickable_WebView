@@ -14,13 +14,33 @@
         <activity
             android:name=".MainActivity"
             android:exported="true">
+
+            <!-- existing launcher filter -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Web links: HTTPS -->
+            <intent-filter>
+                <!-- Optional: android:autoVerify="true" (leave off for now; needs assetlinks.json) -->
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="www.rebrickable.com" android:pathPrefix="/" />
+                <data android:scheme="https" android:host="rebrickable.com" android:pathPrefix="/" />
+            </intent-filter>
+
+            <!-- Web links: HTTP (if you want these too) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" android:host="www.rebrickable.com" android:pathPrefix="/" />
+                <data android:scheme="http" android:host="rebrickable.com" android:pathPrefix="/" />
+            </intent-filter>
         </activity>
+
     </application>
-
-
 
 </manifest>
