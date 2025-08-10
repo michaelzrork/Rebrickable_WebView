@@ -7,8 +7,6 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
-import android.content.pm.ShortcutInfo
-import android.content.pm.ShortcutManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -17,7 +15,6 @@ import android.os.Bundle
 import android.os.Message
 import android.os.Handler
 import android.os.Looper
-import android.graphics.drawable.Icon
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.ValueCallback
@@ -50,8 +47,7 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private val showShareRunnable = Runnable { shareBtn.show() }
 
-    private val defaultUrl = "https://www.rebrickable.com/"
-    private var startUrl = defaultUrl
+    private val startUrl = "https://www.rebrickable.com/"
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private val filePickerLauncher = registerForActivityResult(
@@ -105,8 +101,6 @@ class MainActivity : AppCompatActivity() {
             handler.removeCallbacks(showShareRunnable)
             handler.postDelayed(showShareRunnable, 1000)
         }
-
-        ensurePinnedShortcut()
 
         if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             WebView.setWebContentsDebuggingEnabled(true)
@@ -230,7 +224,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        if (savedInstanceState == null) handleIntent(intent)
+        if (savedInstanceState == null) loadOrShowOffline(startUrl)
         else webView.restoreState(savedInstanceState)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -243,36 +237,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
-    }
-
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        handleIntent(intent)
-    }
-
-    private fun handleIntent(intent: Intent?) {
-        val url = intent?.dataString
-        startUrl = url ?: defaultUrl
-        loadOrShowOffline(startUrl)
-    }
-
-    private fun ensurePinnedShortcut() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val prefs = getSharedPreferences("prefs", Context.MODE_PRIVATE)
-            if (!prefs.getBoolean("shortcut_pinned", false)) {
-                val sm = getSystemService(ShortcutManager::class.java)
-                if (sm.isRequestPinShortcutSupported) {
-                    val shortcut = ShortcutInfo.Builder(this, "rebrickable")
-                        .setShortLabel(getString(R.string.app_name))
-                        .setLongLabel(getString(R.string.app_name))
-                        .setIcon(Icon.createWithResource(this, R.mipmap.ic_launcher))
-                        .setIntent(Intent(Intent.ACTION_VIEW, Uri.parse(defaultUrl)).setClass(this, MainActivity::class.java))
-                        .build()
-                    sm.requestPinShortcut(shortcut, null)
-                    prefs.edit().putBoolean("shortcut_pinned", true).apply()
-                }
-            }
-        }
     }
 
     override fun onDestroy() {
