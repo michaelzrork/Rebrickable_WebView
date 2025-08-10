@@ -13,6 +13,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Message
+import android.os.Handler
+import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.ValueCallback
@@ -41,6 +43,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var errorView: LinearLayout
     private lateinit var retryBtn: Button
     private lateinit var shareBtn: FloatingActionButton
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val showShareRunnable = Runnable { shareBtn.show() }
 
     private val startUrl = "https://www.rebrickable.com/"
 
@@ -89,6 +94,12 @@ class MainActivity : AppCompatActivity() {
                 putExtra(Intent.EXTRA_TEXT, shareUrl)
             }
             startActivity(Intent.createChooser(intent, getString(R.string.share)))
+        }
+
+        webView.setOnScrollChangeListener { _, _, _, _, _ ->
+            shareBtn.hide()
+            handler.removeCallbacks(showShareRunnable)
+            handler.postDelayed(showShareRunnable, 1000)
         }
 
         if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
@@ -226,6 +237,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacks(showShareRunnable)
+        super.onDestroy()
     }
 
     private fun openExternal(url: Uri): Boolean =
