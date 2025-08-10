@@ -1,11 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Base application theme (API 24+ safe). -->
     <style name="Base.Theme.Rebrickable" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Opaque system bars (no edge-to-edge). -->
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:windowTranslucentStatus">false</item>
+
+        <!-- Bar colors (adjust if you want). -->
         <item name="android:statusBarColor">@android:color/black</item>
         <item name="android:navigationBarColor">@android:color/black</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
+        <!-- Do NOT put windowLight* or splash attrs here (SDK-gated). -->
     </style>
+
+    <!-- Public theme used by the manifest. -->
     <style name="Theme.Rebrickable" parent="Base.Theme.Rebrickable" />
 </resources>
