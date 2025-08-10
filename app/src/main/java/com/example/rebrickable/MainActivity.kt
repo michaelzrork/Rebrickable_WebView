@@ -25,6 +25,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Toast
+import com.google.android.material.floatingactionbutton.FloatingActionButton
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progress: ProgressBar
     private lateinit var errorView: LinearLayout
     private lateinit var retryBtn: Button
+    private lateinit var shareBtn: FloatingActionButton
 
     private val startUrl = "https://www.rebrickable.com/"
 
@@ -73,10 +75,20 @@ class MainActivity : AppCompatActivity() {
         progress = findViewById(R.id.progress)
         errorView = findViewById(R.id.error_view)
         retryBtn = findViewById(R.id.btn_retry)
+        shareBtn = findViewById(R.id.btn_share)
 
         retryBtn.setOnClickListener {
             errorView.visibility = android.view.View.GONE
             loadOrShowOffline(startUrl)
+        }
+
+        shareBtn.setOnClickListener {
+            val shareUrl = webView.url ?: startUrl
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, shareUrl)
+            }
+            startActivity(Intent.createChooser(intent, getString(R.string.share)))
         }
 
         if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
