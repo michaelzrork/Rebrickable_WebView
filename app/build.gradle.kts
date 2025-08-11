@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.rebrickable"
         minSdk = 24
         targetSdk = 36
-        versionCode = 27
-        versionName = "1.01"
+        versionCode = 31
+        versionName = "1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

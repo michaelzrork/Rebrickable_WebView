@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -27,6 +28,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.coordinatorlayout.widget.CoordinatorLayout
@@ -50,9 +52,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.content.res.ColorStateList
-import kotlin.math.roundToInt
 import android.content.res.Configuration
-
+import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
@@ -66,54 +67,25 @@ class MainActivity : AppCompatActivity() {
     // Expanding action buttons (same size as menuFab)
     private lateinit var shareFab: FloatingActionButton
     private lateinit var settingsFab: FloatingActionButton
+    private lateinit var topFab: FloatingActionButton
     private var menuExpanded = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val showFabRunnable = Runnable { menuFab.show() }
 
-    // -------- Preferences for Beta Feed --------
+    // -------- Preferences --------
     private lateinit var prefs: SharedPreferences
-    private var betaFeedEnabled: Boolean = false
+    private val PREFS_NAME = "settings"
+    private val PREF_BETA_FEED = "beta_feed"
+    private val PREF_ASKED_APP_LINKS_V2 = "asked_app_links_v2"
 
+    // -------- URLs --------
     private val URL_HOME = "https://www.rebrickable.com/"
     private val URL_BETA_FEED = "https://www.rebrickable.com/feed/BETA/"
     private var startUrl: String = URL_HOME
-    // ------------------------------------------
+    private var betaFeedEnabled: Boolean = false
 
-    private fun applyStatusBarIconMode() {
-        val isNight = (resources.configuration.uiMode and
-                Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-
-        // Legacy flag: dark icons in day, light icons in night
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val decor = window.decorView
-            decor.systemUiVisibility = if (isNight) {
-                decor.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
-            } else {
-                decor.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-            }
-        }
-        // Modern API
-        WindowInsetsControllerCompat(window, window.decorView)
-            .apply { isAppearanceLightStatusBars = !isNight }
-    }
-
-    private fun applySystemBarIconMode() {
-        val isNight = (resources.configuration.uiMode and
-                Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-
-        // Status bar icons (API 23+ via theme already; reassert here for OEMs)
-        WindowInsetsControllerCompat(window, window.decorView)
-            .apply { isAppearanceLightStatusBars = !isNight }
-
-        // Navigation bar icons (API 27+ only)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            WindowInsetsControllerCompat(window, window.decorView)
-                .apply { isAppearanceLightNavigationBars = !isNight }
-        }
-    }
-
-
+    // File chooser
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -138,6 +110,69 @@ class MainActivity : AppCompatActivity() {
     @JavascriptInterface
     fun onBodyBgColor(cssColor: String) {
         runOnUiThread { applyDynamicTint(cssColor) }
+    }
+
+    private fun maybePromptAppLinks() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        if (prefs.getBoolean(PREF_ASKED_APP_LINKS_V2, false)) return
+
+        // On Android 12+ try to detect if link handling is already allowed, using reflection
+        var alreadyAllowed = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val pm = packageManager
+                val method = pm.javaClass.getMethod(
+                    "getDomainVerificationUserState",
+                    String::class.java
+                )
+                val state = method.invoke(pm, packageName)
+                if (state != null) {
+                    val isAllowed = state.javaClass
+                        .getMethod("isLinkHandlingAllowed")
+                        .invoke(state) as? Boolean
+                    alreadyAllowed = (isAllowed == true)
+                }
+            } catch (_: Exception) {
+                // Best-effort; if reflection fails we’ll just show the prompt once
+            }
+        }
+        if (alreadyAllowed) {
+            prefs.edit().putBoolean(PREF_ASKED_APP_LINKS_V2, true).apply()
+            return
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Open Rebrickable links here?")
+            .setMessage("Enable “Open by default” so links to rebrickable.com open in this app automatically.")
+            .setPositiveButton("Enable") { _, _ ->
+                prefs.edit().putBoolean(PREF_ASKED_APP_LINKS_V2, true).apply()
+                openAppLinkSettings()
+            }
+            .setNegativeButton("Later") { _, _ ->
+                prefs.edit().putBoolean(PREF_ASKED_APP_LINKS_V2, true).apply()
+            }
+            .setCancelable(true)
+            .show()
+    }
+
+
+    private fun openAppLinkSettings() {
+        val intents = listOf(
+            Intent(Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            },
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+        )
+        for (i in intents) {
+            try { startActivity(i); return } catch (_: Exception) {}
+        }
+        Toast.makeText(
+            this,
+            "Open Settings → Apps → Rebrickable → Open by default",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun ensureJsBridge() {
@@ -200,7 +235,14 @@ class MainActivity : AppCompatActivity() {
         val color = parseCssColor(css)
         val luminance = ColorUtils.calculateLuminance(color)
         val iconColor = if (luminance < 0.5) Color.WHITE else Color.BLACK
-        listOf(menuFab, shareFab, settingsFab).forEach { fab ->
+
+        val fabs = mutableListOf<FloatingActionButton>()
+        if (this::menuFab.isInitialized) fabs.add(menuFab)
+        if (this::shareFab.isInitialized) fabs.add(shareFab)
+        if (this::settingsFab.isInitialized) fabs.add(settingsFab)
+        if (this::topFab.isInitialized) fabs.add(topFab)
+
+        fabs.forEach { fab ->
             fab.backgroundTintList = ColorStateList.valueOf(color)
             fab.imageTintList = ColorStateList.valueOf(iconColor)
         }
@@ -225,6 +267,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Deep link handling
     private fun handleDeepLinkIfAny(intent: Intent): Boolean {
         val data = intent.data ?: return false
         val host = data.host?.lowercase() ?: return false
@@ -241,19 +284,20 @@ class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, true)
         setContentView(R.layout.activity_main)
 
+        // Status bar icons: dark in day, light in night
         applyStatusBarIconMode()
-        window.decorView.post { applyStatusBarIconMode() } // re-assert after first layout
-
-
-        // Prefer dark icons on (apparently) light status bar
-//        forceLightStatusBar()
-//        window.decorView.post { forceLightStatusBar() }
+        window.decorView.post { applyStatusBarIconMode() }
 
         // prefs + startUrl
-        prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        betaFeedEnabled = prefs.getBoolean("beta_feed", false)
+        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+        // First-run prompt for app links (ask once)
+        maybePromptAppLinks()
+
+        betaFeedEnabled = prefs.getBoolean(PREF_BETA_FEED, false)
         startUrl = if (betaFeedEnabled) URL_BETA_FEED else URL_HOME
 
+        // Views
         webView = findViewById(R.id.webview)
         progress = findViewById(R.id.progress)
         errorView = findViewById(R.id.error_view)
@@ -265,6 +309,14 @@ class MainActivity : AppCompatActivity() {
 
         // Action buttons (same size as menuFab)
         val parent = menuFab.parent as ViewGroup
+
+        // Top (topmost)
+        topFab = buildActionFab(parent, 0, "Go to top") {
+            scrollPageToTop()
+            collapseMenu()
+        }.apply { setImageDrawable(createChevronUpDrawable()) }
+
+        // Share (middle)
         shareFab = buildActionFab(parent, android.R.drawable.ic_menu_share, "Share") {
             val shareUrl = webView.url ?: startUrl
             val intent = Intent(Intent.ACTION_SEND).apply {
@@ -274,6 +326,8 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent.createChooser(intent, getString(R.string.share)))
             collapseMenu()
         }
+
+        // Settings (closest)
         settingsFab = buildActionFab(parent, android.R.drawable.ic_menu_preferences, "Settings") {
             showSettingsSheet()
             collapseMenu()
@@ -303,8 +357,8 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             setSupportZoom(true)
-            builtInZoomControls = true       // zoom enabled
-            displayZoomControls = false      // keep the on-screen zoom buttons hidden
+            builtInZoomControls = true
+            displayZoomControls = false
             cacheMode = WebSettings.LOAD_DEFAULT
             javaScriptCanOpenWindowsAutomatically = true
             setSupportMultipleWindows(false)
@@ -369,16 +423,13 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Keep ONLY core host in-app; Store/Discuss/subdomains to Chrome
+                // Only core host in-app; others to external browser
                 val isCoreHost = host == "www.rebrickable.com" || host == "rebrickable.com"
                 val shouldOpenExternal =
-                    !isCoreHost ||
-                            path.startsWith("/store") ||
-                            path.startsWith("/forum") ||
-                            path.startsWith("/discuss")
-
+                    !isCoreHost || path.startsWith("/store") || path.startsWith("/forum") || path.startsWith("/discuss")
                 if (shouldOpenExternal) return openExternal(url)
-                return false // load in WebView
+
+                return false
             }
         }
 
@@ -449,26 +500,21 @@ class MainActivity : AppCompatActivity() {
         applyStatusBarIconMode()
     }
 
-
-//    override fun onWindowFocusChanged(hasFocus: Boolean) {
-//        super.onWindowFocusChanged(hasFocus)
-//        if (hasFocus) forceLightStatusBar()
-//    }
-
     // ----- Speed-dial (expand/collapse) -----
     private fun expandMenu() {
         if (menuExpanded) return
         menuExpanded = true
 
         (menuFab.parent as? ViewGroup)?.apply {
+            bringChildToFront(topFab)
             bringChildToFront(shareFab)
             bringChildToFront(settingsFab)
             bringChildToFront(menuFab)
         }
 
         val spacingPx = dp(64f)
-        // Gear on bottom (closest), Share on top
-        listOf(settingsFab to 1, shareFab to 2).forEach { (fab, index) ->
+        // Order: Settings (1), Share (2), Top (3)
+        listOf(settingsFab to 1, shareFab to 2, topFab to 3).forEach { (fab, index) ->
             fab.visibility = View.VISIBLE
             fab.scaleX = 0f; fab.scaleY = 0f; fab.alpha = 0f
             fab.translationY = 0f
@@ -485,7 +531,7 @@ class MainActivity : AppCompatActivity() {
     private fun collapseMenu() {
         if (!menuExpanded) return
         menuExpanded = false
-        listOf(shareFab, settingsFab).forEach { fab ->
+        listOf(topFab, shareFab, settingsFab).forEach { fab ->
             fab.animate()
                 .translationY(0f)
                 .scaleX(0.8f).scaleY(0.8f).alpha(0f)
@@ -514,7 +560,7 @@ class MainActivity : AppCompatActivity() {
             isChecked = betaFeedEnabled
             setOnCheckedChangeListener { _, checked ->
                 betaFeedEnabled = checked
-                prefs.edit().putBoolean("beta_feed", checked).apply()
+                prefs.edit().putBoolean(PREF_BETA_FEED, checked).apply()
                 startUrl = if (checked) URL_BETA_FEED else URL_HOME
                 Toast.makeText(
                     this@MainActivity,
@@ -580,12 +626,11 @@ class MainActivity : AppCompatActivity() {
         onClick: () -> Unit
     ): FloatingActionButton {
         val fab = FloatingActionButton(this).apply {
-            // Match the main FAB’s size
             size = menuFab.size
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 useCompatPadding = menuFab.useCompatPadding
             }
-            setImageResource(iconRes)
+            if (iconRes != 0) setImageResource(iconRes)
             contentDescription = contentDesc
             layoutParams = cloneLayoutParams(menuFab)
             visibility = View.GONE
@@ -619,7 +664,7 @@ class MainActivity : AppCompatActivity() {
         val sizePx = dp(sizeDp).toInt().coerceAtLeast(48)
         val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK } // the icon itself tints; this is base
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK } // base; tinted dynamically
         val radius = sizePx * 0.06f
         val cx = sizePx * 0.5f
         val gap = sizePx * 0.18f
@@ -630,15 +675,55 @@ class MainActivity : AppCompatActivity() {
         return BitmapDrawable(resources, bmp)
     }
 
-    /** Prefer dark (black) icons on the status bar so they're legible on a white/light bar. */
-//    private fun forceLightStatusBar() {
-//        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-//            val decor = window.decorView
-//            // set the "light status bar" flag → dark icons/text
-//            decor.systemUiVisibility = decor.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-//        }
-//        // Also tell the controller on newer Android versions
-//        WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = true
-//        // We intentionally do NOT force a specific statusBarColor here to avoid fighting OEM behavior.
-//    }
+    private fun createChevronUpDrawable(): BitmapDrawable {
+        val sizeDp = 24f
+        val sizePx = dp(sizeDp).toInt().coerceAtLeast(48)
+        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            strokeWidth = sizePx * 0.12f
+        }
+        val path = Path().apply {
+            val leftX = sizePx * 0.32f
+            val rightX = sizePx * 0.68f
+            val topY = sizePx * 0.38f
+            val bottomY = sizePx * 0.62f
+            moveTo(leftX, bottomY)
+            lineTo(sizePx * 0.50f, topY)
+            lineTo(rightX, bottomY)
+        }
+        c.drawPath(path, paint)
+        return BitmapDrawable(resources, bmp)
+    }
+
+    private fun applyStatusBarIconMode() {
+        val isNight = (resources.configuration.uiMode and
+                Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val decor = window.decorView
+            decor.systemUiVisibility = if (isNight) {
+                decor.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+            } else {
+                decor.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            }
+        }
+        WindowInsetsControllerCompat(window, window.decorView)
+            .apply { isAppearanceLightStatusBars = !isNight }
+    }
+
+    private fun scrollPageToTop() {
+        try {
+            webView.evaluateJavascript(
+                "(function(){try{window.scrollTo({top:0,behavior:'smooth'});return 1;}catch(e){window.scrollTo(0,0);return 0;}})();",
+                null
+            )
+        } catch (_: Exception) {
+            webView.scrollTo(0, 0)
+        }
+    }
 }
