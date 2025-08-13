@@ -112,7 +112,7 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { applyDynamicTint(cssColor) }
     }
 
-    private fun maybePromptAppLinks() {
+    private fun promptDeepLinks() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         if (prefs.getBoolean(PREF_ASKED_APP_LINKS_V2, false)) return
 
@@ -234,7 +234,12 @@ class MainActivity : AppCompatActivity() {
     private fun applyDynamicTint(css: String) {
         val color = parseCssColor(css)
         val luminance = ColorUtils.calculateLuminance(color)
-        val iconColor = if (luminance < 0.5) Color.WHITE else Color.BLACK
+        // Light gray on dark bg (~70% white), dark gray on light bg (~60% black)
+        val iconColor = if (luminance < 0.5) {
+            ColorUtils.setAlphaComponent(Color.WHITE, (0.90f * 255).toInt())
+        } else {
+            ColorUtils.setAlphaComponent(Color.BLACK, (0.65f * 255).toInt())
+        }
 
         val fabs = mutableListOf<FloatingActionButton>()
         if (this::menuFab.isInitialized) fabs.add(menuFab)
@@ -292,7 +297,7 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
         // First-run prompt for app links (ask once)
-        maybePromptAppLinks()
+        promptDeepLinks()
 
         betaFeedEnabled = prefs.getBoolean(PREF_BETA_FEED, false)
         startUrl = if (betaFeedEnabled) URL_BETA_FEED else URL_HOME
@@ -305,19 +310,19 @@ class MainActivity : AppCompatActivity() {
         menuFab = findViewById(R.id.btn_share)
 
         // triple dots icon
-        menuFab.setImageDrawable(createMoreVertDrawable())
+        menuFab.setImageResource(R.drawable.ic_more_vert_24)
 
         // Action buttons (same size as menuFab)
         val parent = menuFab.parent as ViewGroup
 
-        // Top (topmost)
-        topFab = buildActionFab(parent, 0, "Go to top") {
+        // Top (chevron up)
+        topFab = buildActionFab(parent, R.drawable.ic_expand_less_24, "Go to top") {
             scrollPageToTop()
             collapseMenu()
-        }.apply { setImageDrawable(createChevronUpDrawable()) }
+        }
 
-        // Share (middle)
-        shareFab = buildActionFab(parent, android.R.drawable.ic_menu_share, "Share") {
+        // Share
+        shareFab = buildActionFab(parent, R.drawable.ic_share_24, "Share") {
             val shareUrl = webView.url ?: startUrl
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
@@ -327,8 +332,8 @@ class MainActivity : AppCompatActivity() {
             collapseMenu()
         }
 
-        // Settings (closest)
-        settingsFab = buildActionFab(parent, android.R.drawable.ic_menu_preferences, "Settings") {
+        // Settings
+        settingsFab = buildActionFab(parent, R.drawable.ic_settings_24, "Settings") {
             showSettingsSheet()
             collapseMenu()
         }
@@ -346,7 +351,7 @@ class MainActivity : AppCompatActivity() {
             collapseMenu()
             menuFab.hide()
             handler.removeCallbacks(showFabRunnable)
-            handler.postDelayed(showFabRunnable, 1000)
+            handler.postDelayed(showFabRunnable, 500)
         }
 
         if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
@@ -626,24 +631,37 @@ class MainActivity : AppCompatActivity() {
         onClick: () -> Unit
     ): FloatingActionButton {
         val fab = FloatingActionButton(this).apply {
+            // Match size & layout with the main menu FAB
             size = menuFab.size
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                useCompatPadding = menuFab.useCompatPadding
-            }
+            layoutParams = cloneLayoutParams(menuFab)
+            useCompatPadding = menuFab.useCompatPadding
+
             if (iconRes != 0) setImageResource(iconRes)
             contentDescription = contentDesc
-            layoutParams = cloneLayoutParams(menuFab)
             visibility = View.GONE
             isClickable = false
-            elevation = menuFab.elevation
-            compatElevation = menuFab.compatElevation
             setOnClickListener { onClick() }
+
+            // --- Give it a shadow like the menu FAB (but don't copy stateListAnimator!) ---
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                elevation = menuFab.elevation
+                translationZ = menuFab.translationZ   // resting Z for visible shadow
+            } else {
+                // Pre-L: compat shadow
+                try {
+                    compatElevation = menuFab.compatElevation
+                } catch (_: Exception) { /* no-op on some builds */ }
+            }
+            // -------------------------------------------------------------------------------
         }
+
         parent.addView(fab)
+        // Keep the initial position identical to the menu FAB
         fab.translationX = menuFab.translationX
         fab.translationY = menuFab.translationY
         return fab
     }
+
 
     private fun cloneLayoutParams(view: View): ViewGroup.LayoutParams {
         val p = view.layoutParams
