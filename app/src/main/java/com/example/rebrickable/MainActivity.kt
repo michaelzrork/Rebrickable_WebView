@@ -54,6 +54,9 @@ import android.webkit.WebViewClient
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import kotlin.math.roundToInt
+import android.view.Gravity
+import android.widget.Space
+import android.content.pm.PackageManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -548,18 +551,20 @@ class MainActivity : AppCompatActivity() {
     }
     // ----------------------------------------
 
-    // ----- Settings bottom sheet -----
     private fun showSettingsSheet() {
         val dialog = BottomSheetDialog(this)
+
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20f).toInt(), dp(16f).toInt(), dp(20f).toInt(), dp(24f).toInt())
         }
+
         val title = TextView(this).apply {
             text = "Settings"
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
         }
+
         val betaSwitch = SwitchMaterial(this).apply {
             text = "Beta Feed"
             isChecked = betaFeedEnabled
@@ -574,10 +579,42 @@ class MainActivity : AppCompatActivity() {
                 ).show()
             }
         }
-        container.addView(title, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        container.addView(betaSwitch, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        val footer = TextView(this).apply {
+            text = appLabelAndVersion()
+            textSize = 12f                // smaller than the switch (which is ~16sp)
+            setTypeface(typeface, Typeface.NORMAL)
+            gravity = Gravity.CENTER_HORIZONTAL
+            alpha = 0.7f                  // subtle
+            // optional: make it wrap long names nicely and center
+            setLineSpacing(0f, 1.05f)
+            setPadding(0, dp(8f).toInt(), 0, 0)
+        }
+
+        container.addView(
+            title,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        container.addView(
+            betaSwitch,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        container.addView(
+            footer,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8f).toInt() }
+        )
+
         dialog.setContentView(container)
         dialog.show()
     }
@@ -662,6 +699,32 @@ class MainActivity : AppCompatActivity() {
         return fab
     }
 
+    private fun appLabelAndVersion(): String {
+        val appLabel = try {
+            val res = applicationInfo.labelRes
+            if (res != 0) getString(res)
+            else applicationInfo.nonLocalizedLabel?.toString() ?: "App"
+        } catch (_: Exception) {
+            "App"
+        }
+
+        val versionName = try {
+            val pInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(
+                    packageName,
+                    PackageManager.PackageInfoFlags.of(0)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0)
+            }
+            pInfo.versionName ?: "?"
+        } catch (_: Exception) {
+            "?"
+        }
+
+        return "$appLabel WebView • v$versionName"
+    }
 
     private fun cloneLayoutParams(view: View): ViewGroup.LayoutParams {
         val p = view.layoutParams
