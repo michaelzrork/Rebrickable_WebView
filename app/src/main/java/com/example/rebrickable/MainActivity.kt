@@ -1,5 +1,6 @@
 package com.example.rebrickable
 
+import android.annotation.SuppressLint
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import android.app.Activity
 import android.app.DownloadManager
@@ -9,7 +10,6 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.graphics.*
-import android.graphics.drawable.BitmapDrawable
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -42,7 +42,6 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.switchmaterial.SwitchMaterial
 import android.webkit.CookieManager
-import android.webkit.DownloadListener
 import android.webkit.JavascriptInterface
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
@@ -55,8 +54,10 @@ import android.content.res.ColorStateList
 import android.content.res.Configuration
 import kotlin.math.roundToInt
 import android.view.Gravity
-import android.widget.Space
 import android.content.pm.PackageManager
+import androidx.annotation.RequiresApi
+import androidx.core.content.edit
+import androidx.core.graphics.toColorInt
 
 class MainActivity : AppCompatActivity() {
 
@@ -71,6 +72,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var shareFab: FloatingActionButton
     private lateinit var settingsFab: FloatingActionButton
     private lateinit var topFab: FloatingActionButton
+    private lateinit var setsFab: FloatingActionButton
+    private lateinit var partsFab: FloatingActionButton
+    private lateinit var forwardFab: FloatingActionButton
     private var menuExpanded = false
 
     private val handler = Handler(Looper.getMainLooper())
@@ -78,14 +82,14 @@ class MainActivity : AppCompatActivity() {
 
     // -------- Preferences --------
     private lateinit var prefs: SharedPreferences
-    private val PREFS_NAME = "settings"
-    private val PREF_BETA_FEED = "beta_feed"
-    private val PREF_ASKED_APP_LINKS_V2 = "asked_app_links_v2"
+    private val preferencesName = "settings"
+    private val preferencesBetaFeed = "beta_feed"
+    private val preferencesAskedDeepLink = "asked_app_links_v2"
 
     // -------- URLs --------
-    private val URL_HOME = "https://www.rebrickable.com/"
-    private val URL_BETA_FEED = "https://www.rebrickable.com/feed/BETA/"
-    private var startUrl: String = URL_HOME
+    private val urlHome = "https://www.rebrickable.com/"
+    private val urlBetaFeed = "https://www.rebrickable.com/feed/BETA/"
+    private var startUrl: String = urlHome
     private var betaFeedEnabled: Boolean = false
 
     // File chooser
@@ -115,32 +119,30 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { applyDynamicTint(cssColor) }
     }
 
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun promptDeepLinks() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-        if (prefs.getBoolean(PREF_ASKED_APP_LINKS_V2, false)) return
+        if (prefs.getBoolean(preferencesAskedDeepLink, false)) return
 
         // On Android 12+ try to detect if link handling is already allowed, using reflection
         var alreadyAllowed = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
-                val pm = packageManager
-                val method = pm.javaClass.getMethod(
-                    "getDomainVerificationUserState",
-                    String::class.java
-                )
-                val state = method.invoke(pm, packageName)
-                if (state != null) {
-                    val isAllowed = state.javaClass
-                        .getMethod("isLinkHandlingAllowed")
-                        .invoke(state) as? Boolean
-                    alreadyAllowed = (isAllowed == true)
-                }
-            } catch (_: Exception) {
-                // Best-effort; if reflection fails we’ll just show the prompt once
+        try {
+            val pm = packageManager
+            val method = pm.javaClass.getMethod(
+                "getDomainVerificationUserState",
+                String::class.java
+            )
+            val state = method.invoke(pm, packageName)
+            if (state != null) {
+                val isAllowed = state.javaClass
+                    .getMethod("isLinkHandlingAllowed")
+                    .invoke(state) as? Boolean
+                alreadyAllowed = (isAllowed == true)
             }
+        } catch (_: Exception) {
+            // Best-effort; if reflection fails we’ll just show the prompt once
         }
         if (alreadyAllowed) {
-            prefs.edit().putBoolean(PREF_ASKED_APP_LINKS_V2, true).apply()
+            prefs.edit { putBoolean(preferencesAskedDeepLink, true) }
             return
         }
 
@@ -148,24 +150,25 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Open Rebrickable links here?")
             .setMessage("Enable “Open by default” so links to rebrickable.com open in this app automatically.")
             .setPositiveButton("Enable") { _, _ ->
-                prefs.edit().putBoolean(PREF_ASKED_APP_LINKS_V2, true).apply()
+                prefs.edit { putBoolean(preferencesAskedDeepLink, true) }
                 openAppLinkSettings()
             }
             .setNegativeButton("Later") { _, _ ->
-                prefs.edit().putBoolean(PREF_ASKED_APP_LINKS_V2, true).apply()
+                prefs.edit { putBoolean(preferencesAskedDeepLink, true) }
             }
             .setCancelable(true)
             .show()
     }
 
 
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun openAppLinkSettings() {
         val intents = listOf(
             Intent(Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS).apply {
-                data = Uri.parse("package:$packageName")
+                data = "package:$packageName".toUri()
             },
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.parse("package:$packageName")
+                data = "package:$packageName".toUri()
             }
         )
         for (i in intents) {
@@ -249,6 +252,9 @@ class MainActivity : AppCompatActivity() {
         if (this::shareFab.isInitialized) fabs.add(shareFab)
         if (this::settingsFab.isInitialized) fabs.add(settingsFab)
         if (this::topFab.isInitialized) fabs.add(topFab)
+        if (this::setsFab.isInitialized) fabs.add(setsFab)
+        if (this::partsFab.isInitialized) fabs.add(partsFab)
+        if (this::forwardFab.isInitialized) fabs.add(forwardFab)
 
         fabs.forEach { fab ->
             fab.backgroundTintList = ColorStateList.valueOf(color)
@@ -259,14 +265,14 @@ class MainActivity : AppCompatActivity() {
     private fun parseCssColor(css: String): Int {
         val s = css.trim().lowercase()
         return when {
-            s.startsWith("#") -> Color.parseColor(s)
+            s.startsWith("#") -> s.toColorInt()
             s.startsWith("rgb") -> {
-                val nums = Regex("""[\d.]+""").findAll(s).map { it.value }.toList()
-                val r = nums.getOrNull(0)?.toFloat()?.roundToInt() ?: 255
-                val g = nums.getOrNull(1)?.toFloat()?.roundToInt() ?: 255
-                val b = nums.getOrNull(2)?.toFloat()?.roundToInt() ?: 255
-                val a = when (nums.size) {
-                    4 -> ((nums[3].toFloat().coerceIn(0f,1f)) * 255f).roundToInt()
+                val numbs = Regex("""[\d.]+""").findAll(s).map { it.value }.toList()
+                val r = numbs.getOrNull(0)?.toFloat()?.roundToInt() ?: 255
+                val g = numbs.getOrNull(1)?.toFloat()?.roundToInt() ?: 255
+                val b = numbs.getOrNull(2)?.toFloat()?.roundToInt() ?: 255
+                val a = when (numbs.size) {
+                    4 -> ((numbs[3].toFloat().coerceIn(0f,1f)) * 255f).roundToInt()
                     else -> 255
                 }
                 Color.argb(a, r, g, b)
@@ -286,6 +292,8 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
+    @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -297,13 +305,13 @@ class MainActivity : AppCompatActivity() {
         window.decorView.post { applyStatusBarIconMode() }
 
         // prefs + startUrl
-        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        prefs = getSharedPreferences(preferencesName, MODE_PRIVATE)
 
         // First-run prompt for app links (ask once)
         promptDeepLinks()
 
-        betaFeedEnabled = prefs.getBoolean(PREF_BETA_FEED, false)
-        startUrl = if (betaFeedEnabled) URL_BETA_FEED else URL_HOME
+        betaFeedEnabled = prefs.getBoolean(preferencesBetaFeed, false)
+        startUrl = if (betaFeedEnabled) urlBetaFeed else urlHome
 
         // Views
         webView = findViewById(R.id.webview)
@@ -321,6 +329,17 @@ class MainActivity : AppCompatActivity() {
         // Top (chevron up)
         topFab = buildActionFab(parent, R.drawable.ic_expand_less_24, "Go to top") {
             scrollPageToTop()
+            collapseMenu()
+        }
+
+        forwardFab = buildActionFab(parent, R.drawable.ic_arrow_forward_24, "Forward") {
+            webView.goForward()
+            collapseMenu()
+        }
+
+        // Sets
+        setsFab = buildActionFab(parent, R.drawable.ic_sets_24, "Sets") {
+            webView.loadUrl("https://rebrickable.com/my/lego")
             collapseMenu()
         }
 
@@ -376,7 +395,7 @@ class MainActivity : AppCompatActivity() {
             @Suppress("DEPRECATION") setAllowFileAccessFromFileURLs(false)
             @Suppress("DEPRECATION") setAllowUniversalAccessFromFileURLs(false)
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) safeBrowsingEnabled = true
+            safeBrowsingEnabled = true
         }
 
         CookieManager.getInstance().apply {
@@ -387,7 +406,7 @@ class MainActivity : AppCompatActivity() {
         ensureJsBridge()
 
         webView.webViewClient = object : WebViewClient() {
-            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 progress.visibility = View.VISIBLE
                 super.onPageStarted(view, url, favicon)
             }
@@ -426,7 +445,7 @@ class MainActivity : AppCompatActivity() {
                 // Redirect "home" to Beta Feed if enabled
                 if (betaFeedEnabled && (host == "www.rebrickable.com" || host == "rebrickable.com")) {
                     if (path == "/home" || path == "/home/") {
-                        webView.loadUrl(URL_BETA_FEED)
+                        webView.loadUrl(urlBetaFeed)
                         return true
                     }
                 }
@@ -463,7 +482,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        webView.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             try {
                 val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
                 val req = DownloadManager.Request(url.toUri()).apply {
@@ -478,7 +497,7 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {
                 Toast.makeText(this, "Couldn't start download", Toast.LENGTH_SHORT).show()
             }
-        })
+        }
 
         if (savedInstanceState == null) {
             if (!handleDeepLinkIfAny(intent)) loadOrShowOffline(startUrl)
@@ -515,6 +534,8 @@ class MainActivity : AppCompatActivity() {
 
         (menuFab.parent as? ViewGroup)?.apply {
             bringChildToFront(topFab)
+            bringChildToFront(forwardFab)
+            bringChildToFront(setsFab)
             bringChildToFront(shareFab)
             bringChildToFront(settingsFab)
             bringChildToFront(menuFab)
@@ -522,7 +543,7 @@ class MainActivity : AppCompatActivity() {
 
         val spacingPx = dp(64f)
         // Order: Settings (1), Share (2), Top (3)
-        listOf(settingsFab to 1, shareFab to 2, topFab to 3).forEach { (fab, index) ->
+        listOf(settingsFab to 1, shareFab to 2, setsFab to 3, topFab to 4, forwardFab to 5).forEach { (fab, index) ->
             fab.visibility = View.VISIBLE
             fab.scaleX = 0f; fab.scaleY = 0f; fab.alpha = 0f
             fab.translationY = 0f
@@ -539,7 +560,7 @@ class MainActivity : AppCompatActivity() {
     private fun collapseMenu() {
         if (!menuExpanded) return
         menuExpanded = false
-        listOf(topFab, shareFab, settingsFab).forEach { fab ->
+        listOf(topFab, forwardFab, setsFab, shareFab, settingsFab).forEach { fab ->
             fab.animate()
                 .translationY(0f)
                 .scaleX(0.8f).scaleY(0.8f).alpha(0f)
@@ -549,6 +570,7 @@ class MainActivity : AppCompatActivity() {
         }
         menuFab.animate().rotation(0f).setDuration(120).start()
     }
+
     // ----------------------------------------
 
     private fun showSettingsSheet() {
@@ -560,18 +582,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "Settings"
+            text = getText(R.string.settings_title)
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
         }
 
         val betaSwitch = SwitchMaterial(this).apply {
-            text = "Beta Feed"
+            text = getText(R.string.beta_feed)
             isChecked = betaFeedEnabled
             setOnCheckedChangeListener { _, checked ->
                 betaFeedEnabled = checked
-                prefs.edit().putBoolean(PREF_BETA_FEED, checked).apply()
-                startUrl = if (checked) URL_BETA_FEED else URL_HOME
+                prefs.edit { putBoolean(preferencesBetaFeed, checked) }
+                startUrl = if (checked) urlBetaFeed else urlHome
                 Toast.makeText(
                     this@MainActivity,
                     if (checked) "Beta Feed enabled" else "Beta Feed disabled",
@@ -680,15 +702,8 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onClick() }
 
             // --- Give it a shadow like the menu FAB (but don't copy stateListAnimator!) ---
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                elevation = menuFab.elevation
-                translationZ = menuFab.translationZ   // resting Z for visible shadow
-            } else {
-                // Pre-L: compat shadow
-                try {
-                    compatElevation = menuFab.compatElevation
-                } catch (_: Exception) { /* no-op on some builds */ }
-            }
+            elevation = menuFab.elevation
+            translationZ = menuFab.translationZ   // resting Z for visible shadow
             // -------------------------------------------------------------------------------
         }
 
@@ -715,7 +730,6 @@ class MainActivity : AppCompatActivity() {
                     PackageManager.PackageInfoFlags.of(0)
                 )
             } else {
-                @Suppress("DEPRECATION")
                 packageManager.getPackageInfo(packageName, 0)
             }
             pInfo.versionName ?: "?"
@@ -723,12 +737,11 @@ class MainActivity : AppCompatActivity() {
             "?"
         }
 
-        return "$appLabel WebView • v$versionName"
+        return "$appLabel • v$versionName"
     }
 
     private fun cloneLayoutParams(view: View): ViewGroup.LayoutParams {
-        val p = view.layoutParams
-        return when (p) {
+        return when (val p = view.layoutParams) {
             is CoordinatorLayout.LayoutParams -> CoordinatorLayout.LayoutParams(p)
             is ConstraintLayout.LayoutParams -> ConstraintLayout.LayoutParams(p)
             is FrameLayout.LayoutParams -> FrameLayout.LayoutParams(p)
@@ -740,58 +753,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
-    private fun createMoreVertDrawable(): BitmapDrawable {
-        val sizeDp = 24f
-        val sizePx = dp(sizeDp).toInt().coerceAtLeast(48)
-        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK } // base; tinted dynamically
-        val radius = sizePx * 0.06f
-        val cx = sizePx * 0.5f
-        val gap = sizePx * 0.18f
-        val centerY = sizePx * 0.5f
-        c.drawCircle(cx, centerY - gap, radius, paint)
-        c.drawCircle(cx, centerY, radius, paint)
-        c.drawCircle(cx, centerY + gap, radius, paint)
-        return BitmapDrawable(resources, bmp)
-    }
-
-    private fun createChevronUpDrawable(): BitmapDrawable {
-        val sizeDp = 24f
-        val sizePx = dp(sizeDp).toInt().coerceAtLeast(48)
-        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.BLACK
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-            strokeWidth = sizePx * 0.12f
-        }
-        val path = Path().apply {
-            val leftX = sizePx * 0.32f
-            val rightX = sizePx * 0.68f
-            val topY = sizePx * 0.38f
-            val bottomY = sizePx * 0.62f
-            moveTo(leftX, bottomY)
-            lineTo(sizePx * 0.50f, topY)
-            lineTo(rightX, bottomY)
-        }
-        c.drawPath(path, paint)
-        return BitmapDrawable(resources, bmp)
-    }
-
     private fun applyStatusBarIconMode() {
         val isNight = (resources.configuration.uiMode and
                 Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val decor = window.decorView
-            decor.systemUiVisibility = if (isNight) {
-                decor.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
-            } else {
-                decor.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-            }
+        val decor = window.decorView
+        decor.systemUiVisibility = if (isNight) {
+            decor.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        } else {
+            decor.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
         }
         WindowInsetsControllerCompat(window, window.decorView)
             .apply { isAppearanceLightStatusBars = !isNight }

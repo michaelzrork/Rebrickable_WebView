@@ -12,13 +12,13 @@ android {
         minSdk = 24
         targetSdk = 36
         versionCode = 34
-        versionName = "1.2.2"
+        versionName = "1.2.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         applicationVariants.all {
             outputs.all {
-                val variant = this as com.android.build.gradle.internal.api.ApkVariantOutputImpl
+                this as com.android.build.gradle.internal.api.ApkVariantOutputImpl
                 val newName = "Rebrickable_WebView_${versionName}.apk"
                 outputFileName = newName
             }
