@@ -1,5 +1,6 @@
 package com.example.rebrickable
 
+import android.Manifest
 import android.annotation.SuppressLint
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import android.app.Activity
@@ -9,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.*
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -17,6 +19,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.Environment
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
@@ -28,10 +31,13 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.coordinatorlayout.widget.CoordinatorLayout
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
@@ -52,12 +58,14 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.media.MediaScannerConnection
+import android.util.Log
 import kotlin.math.roundToInt
 import android.view.Gravity
-import android.content.pm.PackageManager
-import androidx.annotation.RequiresApi
 import androidx.core.content.edit
 import androidx.core.graphics.toColorInt
+import java.io.File
+import androidx.core.app.NotificationCompat
 
 class MainActivity : AppCompatActivity() {
 
@@ -92,6 +100,15 @@ class MainActivity : AppCompatActivity() {
     private var startUrl: String = urlHome
     private var betaFeedEnabled: Boolean = false
 
+    // -------- Permission handling --------
+    companion object {
+        private const val STORAGE_PERMISSION_REQUEST_CODE = 100
+    }
+    private var pendingDownload: (() -> Unit)? = null
+
+    // -------- CSRF token --------
+    private var csrfToken: String? = null
+
     // File chooser
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private val filePickerLauncher = registerForActivityResult(
@@ -119,11 +136,443 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { applyDynamicTint(cssColor) }
     }
 
+    @JavascriptInterface
+    fun setCSRFToken(token: String) {
+        csrfToken = token
+        Log.d("Download", "CSRF token received: $token")
+    }
+
+    @JavascriptInterface
+    fun handleJsDownload(url: String) {
+        Log.d("Download", "JS Download intercepted: $url")
+        runOnUiThread {
+            if (url.startsWith("blob:")) {
+                extractBlobContent(url)
+            } else {
+                downloadWithinWebView(url)
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun saveDownloadedContent(content: String, fileName: String) {
+        Log.d("Download", "Saving downloaded content, length: ${content.length}")
+        Log.d("Download", "Original filename: $fileName")
+
+        runOnUiThread {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // Android 10+ - Use MediaStore for public Downloads
+                    saveToPublicDownloadsModern(content, fileName)
+                } else {
+                    // Android 9 and below - Use legacy external storage
+                    saveToPublicDownloadsLegacy(content, fileName)
+                }
+            } catch (e: Exception) {
+                Log.e("Download", "Failed to save file", e)
+                Toast.makeText(this, "Failed to save: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // Modern approach for Android 10+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun saveToPublicDownloadsModern(content: String, fileName: String) {
+        val contentResolver = contentResolver
+        val contentValues = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/csv")
+            put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+        }
+
+        val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+
+        if (uri != null) {
+            contentResolver.openOutputStream(uri)?.use { outputStream ->
+                outputStream.write(content.toByteArray(Charsets.UTF_8))
+            }
+
+            // Get the actual file path for logging
+            val cursor = contentResolver.query(uri, arrayOf(android.provider.MediaStore.Downloads.DATA), null, null, null)
+            var filePath = "Downloads/$fileName"
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val columnIndex = it.getColumnIndex(android.provider.MediaStore.Downloads.DATA)
+                    if (columnIndex >= 0) {
+                        filePath = it.getString(columnIndex) ?: filePath
+                    }
+                }
+            }
+
+            Log.d("Download", "File saved to: $filePath")
+            Toast.makeText(this, "Downloaded: $fileName (${content.length} bytes)", Toast.LENGTH_LONG).show()
+
+            // Show notification
+            showSimpleDownloadNotification(fileName)
+
+            // Trigger media scanner
+            android.media.MediaScannerConnection.scanFile(
+                this,
+                arrayOf(filePath),
+                arrayOf("text/csv"),
+                null
+            )
+
+        } else {
+            throw Exception("Could not create file in Downloads")
+        }
+    }
+
+    // Legacy approach for Android 9 and below
+    private fun saveToPublicDownloadsLegacy(content: String, fileName: String) {
+        @Suppress("DEPRECATION")
+        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOWNLOADS
+        )
+
+        if (!downloadsDir.exists()) {
+            downloadsDir.mkdirs()
+        }
+
+        // Create unique filename if file already exists
+        var finalFileName = fileName
+        var counter = 1
+        var file = File(downloadsDir, finalFileName)
+
+        while (file.exists()) {
+            val nameWithoutExt = fileName.substringBeforeLast(".")
+            val extension = fileName.substringAfterLast(".")
+            finalFileName = "${nameWithoutExt}_$counter.$extension"
+            file = File(downloadsDir, finalFileName)
+            counter++
+        }
+
+        Log.d("Download", "Final filename: $finalFileName")
+        Log.d("Download", "Save path: ${file.absolutePath}")
+
+        file.writeText(content, Charsets.UTF_8)
+
+        // Trigger media scanner to make file visible immediately
+        android.media.MediaScannerConnection.scanFile(
+            this,
+            arrayOf(file.absolutePath),
+            arrayOf("text/csv")
+        ) { path, uri ->
+            Log.d("Download", "File scanned: $path")
+        }
+
+        Toast.makeText(this, "Downloaded: $finalFileName (${content.length} bytes)", Toast.LENGTH_LONG).show()
+        Log.d("Download", "File saved successfully: ${file.absolutePath}")
+
+        // Show notification
+        showSimpleDownloadNotification(finalFileName)
+    }
+
+    @JavascriptInterface
+    fun downloadFailed(error: String) {
+        Log.e("Download", "Download failed: $error")
+        runOnUiThread {
+            Toast.makeText(this, "Download failed: $error", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @JavascriptInterface
+    fun saveBlobContent(content: String, fileName: String) {
+        Log.d("Download", "Saving blob content, length: ${content.length}")
+        // Reuse the saveDownloadedContent method
+        saveDownloadedContent(content, fileName)
+    }
+
+    // -------- Permission Methods --------
+    private fun checkStoragePermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ doesn't need storage permissions for app-specific directories
+            true
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    private fun requestStoragePermission(onGranted: () -> Unit) {
+        if (checkStoragePermission()) {
+            onGranted()
+            return
+        }
+
+        pendingDownload = onGranted
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                STORAGE_PERMISSION_REQUEST_CODE
+            )
+        } else {
+            onGranted()
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            STORAGE_PERMISSION_REQUEST_CODE -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    pendingDownload?.invoke()
+                } else {
+                    Toast.makeText(this, "Storage permission needed for downloads", Toast.LENGTH_LONG).show()
+                }
+                pendingDownload = null
+            }
+        }
+    }
+
+    // -------- Download Methods --------
+    private fun downloadWithinWebView(url: String) {
+        requestStoragePermission {
+            val fileName = extractFileName(url)
+            Log.d("Download", "Downloading within WebView context: $url")
+
+            val js = """
+            (function() {
+                console.log('Starting fetch download for: $url');
+                
+                fetch('$url', {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: {
+                        'Accept': 'text/csv,application/csv,*/*',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                })
+                .then(response => {
+                    console.log('Fetch response status:', response.status);
+                    if (!response.ok) {
+                        throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+                    }
+                    
+                    // Try to get filename from Content-Disposition header
+                    const contentDisposition = response.headers.get('content-disposition');
+                    let responseFileName = '$fileName';
+                    
+                    if (contentDisposition) {
+                        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                        if (filenameMatch && filenameMatch[1]) {
+                            responseFileName = filenameMatch[1].replace(/['"]/g, '');
+                            console.log('Filename from header:', responseFileName);
+                        }
+                    }
+                    
+                    return response.text().then(content => ({ content, fileName: responseFileName }));
+                })
+                .then(result => {
+                    console.log('Download successful, content length:', result.content.length);
+                    console.log('Using filename:', result.fileName);
+                    AndroidBridge.saveDownloadedContent(result.content, result.fileName);
+                })
+                .catch(error => {
+                    console.error('Fetch download failed:', error);
+                    AndroidBridge.downloadFailed(error.message);
+                });
+            })();
+        """.trimIndent()
+
+            webView.evaluateJavascript(js, null)
+        }
+    }
+
+    private fun extractFileName(url: String): String {
+        return try {
+            val uri = Uri.parse(url)
+            val path = uri.path ?: ""
+            val query = uri.query ?: ""
+
+            Log.d("Download", "Extracting filename from URL: $url")
+            Log.d("Download", "Path: $path")
+            Log.d("Download", "Query: $query")
+
+            when {
+                // For Rebrickable CSV exports, look for specific patterns
+                query.contains("format=rbsetscsv") -> {
+                    val pathParts = path.split("/")
+                    val listId = pathParts.find { it.matches(Regex("\\d+")) }
+                    "rebrickable_sets_${listId ?: "export"}.csv"
+                }
+                query.contains("format=rbpartscsv") -> {
+                    val pathParts = path.split("/")
+                    val listId = pathParts.find { it.matches(Regex("\\d+")) }
+                    "rebrickable_parts_${listId ?: "export"}.csv"
+                }
+                query.contains("format=csv") -> {
+                    val pathParts = path.split("/")
+                    val listId = pathParts.find { it.matches(Regex("\\d+")) }
+                    "rebrickable_${listId ?: "export"}.csv"
+                }
+                query.contains("filename=") -> {
+                    query.split("&").find { it.startsWith("filename=") }
+                        ?.substringAfter("filename=")
+                        ?.replace("%20", "_")
+                        ?: "rebrickable_export.csv"
+                }
+                path.contains(".csv") -> {
+                    path.substringAfterLast("/").takeIf { it.contains(".") }
+                        ?: "rebrickable_export.csv"
+                }
+                url.contains("csv", true) -> "rebrickable_export.csv"
+                url.contains("pdf", true) -> "rebrickable_export.pdf"
+                url.contains("excel", true) -> "rebrickable_export.xlsx"
+                else -> "rebrickable_download_${System.currentTimeMillis()}.csv"
+            }
+        } catch (e: Exception) {
+            Log.e("Download", "Error extracting filename", e)
+            "rebrickable_export.csv"
+        }
+    }
+
+    private fun extractBlobContent(blobUrl: String) {
+        val js = """
+        (function() {
+            fetch('$blobUrl')
+                .then(response => response.text())
+                .then(content => {
+                    AndroidBridge.saveBlobContent(content, 'rebrickable_export.csv');
+                })
+                .catch(err => console.error('Failed to extract blob:', err));
+        })();
+    """.trimIndent()
+
+        webView.evaluateJavascript(js, null)
+    }
+
+    // Also update the notification method to be more reliable:
+    private fun showSimpleDownloadNotification(fileName: String) {
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+
+            // Create notification channel for Android 8+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    "download_channel",
+                    "Downloads",
+                    android.app.NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "Download notifications"
+                    enableVibration(true)
+                    enableLights(true)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            // Intent to open Downloads folder in file manager
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                type = "resource/folder"
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    data = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                } else {
+                    @Suppress("DEPRECATION")
+                    data = Uri.fromFile(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS))
+                }
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val pendingIntent = try {
+                android.app.PendingIntent.getActivity(
+                    this,
+                    0,
+                    intent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                )
+            } catch (e: Exception) {
+                Log.w("Download", "Could not create pending intent for Downloads folder", e)
+                null
+            }
+
+            val notification = androidx.core.app.NotificationCompat.Builder(this, "download_channel")
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("Download Complete")
+                .setContentText("$fileName saved to Downloads")
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+                .setDefaults(androidx.core.app.NotificationCompat.DEFAULT_ALL)
+                .build()
+
+            val notificationId = System.currentTimeMillis().toInt()
+            notificationManager.notify(notificationId, notification)
+            Log.d("Download", "Notification shown for: $fileName (ID: $notificationId)")
+
+        } catch (e: Exception) {
+            Log.e("Download", "Failed to show notification", e)
+        }
+    }
+
+    private fun injectDownloadInterceptor() {
+        val js = """
+        (function() {
+            if (window.downloadInterceptorInjected) return;
+            window.downloadInterceptorInjected = true;
+            
+            console.log('Download interceptor injected');
+            
+            // Extract CSRF token
+            const csrfTokenMeta = document.querySelector('meta[name="csrf-token"]');
+            const csrfTokenInput = document.querySelector('input[name="csrfmiddlewaretoken"]');
+            let csrfToken = null;
+            
+            if (csrfTokenMeta) {
+                csrfToken = csrfTokenMeta.getAttribute('content');
+            } else if (csrfTokenInput) {
+                csrfToken = csrfTokenInput.value;
+            }
+            
+            if (csrfToken) {
+                AndroidBridge.setCSRFToken(csrfToken);
+            }
+            
+            // Override link clicks for downloads
+            document.addEventListener('click', function(e) {
+                const link = e.target.closest('a');
+                if (link && link.href) {
+                    const href = link.href;
+                    console.log('Link clicked:', href);
+                    if (href.includes('download') || href.includes('export') || href.includes('.csv') || 
+                        link.download || href.includes('blob:') || href.includes('format=')) {
+                        console.log('Download link detected:', href);
+                        e.preventDefault();
+                        e.stopPropagation();
+                        AndroidBridge.handleJsDownload(href);
+                        return false;
+                    }
+                }
+            }, true);
+            
+            // Also intercept any programmatic navigation to download URLs
+            const originalAssign = location.assign;
+            location.assign = function(url) {
+                if (url.includes('download') || url.includes('export') || url.includes('.csv') || url.includes('format=')) {
+                    AndroidBridge.handleJsDownload(url);
+                } else {
+                    originalAssign.call(this, url);
+                }
+            };
+        })();
+    """.trimIndent()
+
+        webView.evaluateJavascript(js, null)
+    }
+
     @RequiresApi(Build.VERSION_CODES.S)
     private fun promptDeepLinks() {
         if (prefs.getBoolean(preferencesAskedDeepLink, false)) return
 
-        // On Android 12+ try to detect if link handling is already allowed, using reflection
         var alreadyAllowed = false
         try {
             val pm = packageManager
@@ -139,7 +588,6 @@ class MainActivity : AppCompatActivity() {
                 alreadyAllowed = (isAllowed == true)
             }
         } catch (_: Exception) {
-            // Best-effort; if reflection fails we’ll just show the prompt once
         }
         if (alreadyAllowed) {
             prefs.edit { putBoolean(preferencesAskedDeepLink, true) }
@@ -148,7 +596,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Open Rebrickable links here?")
-            .setMessage("Enable “Open by default” so links to rebrickable.com open in this app automatically.")
+            .setMessage("Enable 'Open by default' so links to rebrickable.com open in this app automatically.")
             .setPositiveButton("Enable") { _, _ ->
                 prefs.edit { putBoolean(preferencesAskedDeepLink, true) }
                 openAppLinkSettings()
@@ -159,7 +607,6 @@ class MainActivity : AppCompatActivity() {
             .setCancelable(true)
             .show()
     }
-
 
     @RequiresApi(Build.VERSION_CODES.S)
     private fun openAppLinkSettings() {
@@ -235,12 +682,10 @@ class MainActivity : AppCompatActivity() {
         """.trimIndent()
         webView.evaluateJavascript(js, null)
     }
-    // ===== end dynamic color bridge =====
 
     private fun applyDynamicTint(css: String) {
         val color = parseCssColor(css)
         val luminance = ColorUtils.calculateLuminance(color)
-        // Light gray on dark bg (~70% white), dark gray on light bg (~60% black)
         val iconColor = if (luminance < 0.5) {
             ColorUtils.setAlphaComponent(Color.WHITE, (0.90f * 255).toInt())
         } else {
@@ -281,7 +726,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Deep link handling
     private fun handleDeepLinkIfAny(intent: Intent): Boolean {
         val data = intent.data ?: return false
         val host = data.host?.lowercase() ?: return false
@@ -300,14 +744,10 @@ class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, true)
         setContentView(R.layout.activity_main)
 
-        // Status bar icons: dark in day, light in night
         applyStatusBarIconMode()
         window.decorView.post { applyStatusBarIconMode() }
 
-        // prefs + startUrl
         prefs = getSharedPreferences(preferencesName, MODE_PRIVATE)
-
-        // First-run prompt for app links (ask once)
         promptDeepLinks()
 
         betaFeedEnabled = prefs.getBoolean(preferencesBetaFeed, false)
@@ -320,13 +760,10 @@ class MainActivity : AppCompatActivity() {
         retryBtn = findViewById(R.id.btn_retry)
         menuFab = findViewById(R.id.btn_share)
 
-        // triple dots icon
         menuFab.setImageResource(R.drawable.ic_more_vert_24)
 
-        // Action buttons (same size as menuFab)
         val parent = menuFab.parent as ViewGroup
 
-        // Top (chevron up)
         topFab = buildActionFab(parent, R.drawable.ic_expand_less_24, "Go to top") {
             scrollPageToTop()
             collapseMenu()
@@ -337,13 +774,11 @@ class MainActivity : AppCompatActivity() {
             collapseMenu()
         }
 
-        // Sets
         setsFab = buildActionFab(parent, R.drawable.ic_sets_24, "Sets") {
             webView.loadUrl("https://rebrickable.com/my/lego")
             collapseMenu()
         }
 
-        // Share
         shareFab = buildActionFab(parent, R.drawable.ic_share_24, "Share") {
             val shareUrl = webView.url ?: startUrl
             val intent = Intent(Intent.ACTION_SEND).apply {
@@ -354,7 +789,6 @@ class MainActivity : AppCompatActivity() {
             collapseMenu()
         }
 
-        // Settings
         settingsFab = buildActionFab(parent, R.drawable.ic_settings_24, "Settings") {
             showSettingsSheet()
             collapseMenu()
@@ -414,12 +848,14 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 progress.visibility = View.GONE
                 injectBodyBgWatcher()
+                injectDownloadInterceptor()
                 super.onPageFinished(view, url)
             }
 
             override fun onPageCommitVisible(view: WebView?, url: String?) {
                 super.onPageCommitVisible(view, url)
                 injectBodyBgWatcher()
+                injectDownloadInterceptor()
             }
 
             override fun onReceivedError(
@@ -437,6 +873,7 @@ class MainActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url ?: return false
                 val scheme = url.scheme?.lowercase()
+
                 if (scheme !in listOf("http", "https")) return openExternal(url)
 
                 val host = (url.host ?: "").lowercase()
@@ -482,20 +919,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Basic download listener (fallback)
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
-            try {
-                val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
-                val req = DownloadManager.Request(url.toUri()).apply {
-                    addRequestHeader("User-Agent", userAgent)
-                    setMimeType(mimeType)
-                    setTitle(fileName)
-                    setDescription("Downloading…")
-                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            requestStoragePermission {
+                try {
+                    val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+                    Log.d("Download", "Fallback download triggered for: $fileName")
+
+                    // Use our enhanced download method
+                    downloadWithinWebView(url)
+
+                } catch (e: Exception) {
+                    Log.e("Download", "Download failed", e)
+                    Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
                 }
-                (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(req)
-                Toast.makeText(this, "Downloading $fileName", Toast.LENGTH_SHORT).show()
-            } catch (_: Exception) {
-                Toast.makeText(this, "Couldn't start download", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -542,7 +979,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         val spacingPx = dp(64f)
-        // Order: Settings (1), Share (2), Top (3)
         listOf(settingsFab to 1, shareFab to 2, setsFab to 3, topFab to 4, forwardFab to 5).forEach { (fab, index) ->
             fab.visibility = View.VISIBLE
             fab.scaleX = 0f; fab.scaleY = 0f; fab.alpha = 0f
@@ -570,8 +1006,6 @@ class MainActivity : AppCompatActivity() {
         }
         menuFab.animate().rotation(0f).setDuration(120).start()
     }
-
-    // ----------------------------------------
 
     private fun showSettingsSheet() {
         val dialog = BottomSheetDialog(this)
@@ -604,11 +1038,10 @@ class MainActivity : AppCompatActivity() {
 
         val footer = TextView(this).apply {
             text = appLabelAndVersion()
-            textSize = 12f                // smaller than the switch (which is ~16sp)
+            textSize = 12f
             setTypeface(typeface, Typeface.NORMAL)
             gravity = Gravity.CENTER_HORIZONTAL
-            alpha = 0.7f                  // subtle
-            // optional: make it wrap long names nicely and center
+            alpha = 0.7f
             setLineSpacing(0f, 1.05f)
             setPadding(0, dp(8f).toInt(), 0, 0)
         }
@@ -640,7 +1073,6 @@ class MainActivity : AppCompatActivity() {
         dialog.setContentView(container)
         dialog.show()
     }
-    // ---------------------------------
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -690,7 +1122,6 @@ class MainActivity : AppCompatActivity() {
         onClick: () -> Unit
     ): FloatingActionButton {
         val fab = FloatingActionButton(this).apply {
-            // Match size & layout with the main menu FAB
             size = menuFab.size
             layoutParams = cloneLayoutParams(menuFab)
             useCompatPadding = menuFab.useCompatPadding
@@ -701,14 +1132,11 @@ class MainActivity : AppCompatActivity() {
             isClickable = false
             setOnClickListener { onClick() }
 
-            // --- Give it a shadow like the menu FAB (but don't copy stateListAnimator!) ---
             elevation = menuFab.elevation
-            translationZ = menuFab.translationZ   // resting Z for visible shadow
-            // -------------------------------------------------------------------------------
+            translationZ = menuFab.translationZ
         }
 
         parent.addView(fab)
-        // Keep the initial position identical to the menu FAB
         fab.translationX = menuFab.translationX
         fab.translationY = menuFab.translationY
         return fab
